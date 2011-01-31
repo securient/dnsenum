@@ -1,6 +1,6 @@
-README - dnsenum.pl VERSION: 1.2
+README - dnsenum.pl VERSION: 1.2.1
 
-multithread perl script to enumerate DNS information on a domain
+multithreaded perl script to enumerate DNS information of a domain
 and to discover non-contiguous ip blocks.
 
 OPERATIONS:
@@ -27,6 +27,9 @@ OPERATIONS:
 
 	9) Write to domain_ips.txt file ip-blocks.
 
+Changelog from version 1.2:
+- Cleanup
+- Added XML output support for MagicTree integration (www.gremwell.com)
 
 PREREQUISITES: 
 
@@ -44,6 +47,15 @@ PREREQUISITES:
 		Net::Whois::IP
 		HTML::Parser
 		WWW::Mechanize
+		XML::Writer
+		
+To install a module, simply run (as root):
+
+perl -MCPAN -e shell
+
+and then type: install <MODULE>
+ eg:
+cpan[1]> install XML::Writer
 
   Perl ithreads support:
 	perl version must be compliled with ithreads support.
@@ -54,7 +66,8 @@ PREREQUISITES:
 OPTIONS: run "perldoc dnsenum.pl".
 
 
-Special thanks to perl and module developpers.
+
+Special thanks to all perl  developers.
 
 Filip Waeytens		<filip.waeytens[at]gmail.com>	
 tix tixxDZ		<tixxdz[at]gmail.com>
