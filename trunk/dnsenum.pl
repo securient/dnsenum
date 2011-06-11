@@ -1,8 +1,9 @@
 #!/usr/bin/perl
-#	dnsenum.pl VERSION 1.2.1
-#	This version:	- cleanup
-#					- added XML output support for MagicTree integration
-#					(www.gremwell.com) - thnks to Alla Bezroutchko
+#
+#
+#	dnsenum.pl VERSION 1.2.2
+#	This version:	- Improvement of output
+#			- Added DNS Server Fingerprinting
 #		
 #	dnsenum.pl: multithread script to enumerate information on
 #		a domain and to discover non-contiguous ip blocks.
@@ -44,11 +45,12 @@
 #
 #	Special thanks to all perl developers.
 #
+#	please see perldoc dnsenum.pl for options and arguments
 
 use strict;
-use warnings;
+use warnings;#it complains about uninitialized values when it doesn't find address in RR; need to fix later
 use Config;
-
+use Term::ANSIColor;
 use Getopt::Long;
 use IO::File;
 use Net::IP;
@@ -57,7 +59,7 @@ use Net::Netmask;
 use XML::Writer;
 use Socket;
 
-my ($ithreads_support, $whois_support, $mech_support, $html_support);
+my ($ithreads_support, $whois_support, $mech_support, $html_support,$xml_support);
 
 my (%nameservers, %allsubs, %googlesubs);
 my (%filesubs, %netranges, %recursubs);
@@ -68,10 +70,10 @@ my ($dnsfile, $subfile, $dns_tmp, $sub_tmp, $fileips);
 my ($domain, $recur, $table, $extend_b, $extend_r);
 my ($timeout, $delay, $pages, $ipcount, $ipvalid) = (10, 3, 20, 0, 0);
 my ($output);
-
+my $writer;
 my $program = 'dnsenum.pl';
 my $wildcards = 'pseudorandabcdefuvwxyz0123456789.';
-my $VERSION = '1.2';
+my $VERSION = '1.2.2';
 
 #load threads modules (perl must be compiled with ithreads support)
 BEGIN {
@@ -93,6 +95,10 @@ $mech_support = 1 unless $@;
 eval("use HTML::Parser;");
 $html_support = 1 unless $@;
 
+eval("use XML::Writer;");
+$xml_support = 1 unless $@;
+
+
 print STDOUT $program, " VERSION:", $VERSION, "\n";
 
 GetOptions (	'dnsserver=s'	=>	\$dnsserver,
@@ -112,32 +118,19 @@ GetOptions (	'dnsserver=s'	=>	\$dnsserver,
 		'u|update=s'	=>	\$update,
 		'v|verbose'	=>	\$verbose,
 		'w|whois'	=>	\$whois,
-        'o|out=s'     =>  \$output);
+		'o|out=s'	=>	\$output);
 
 usage() if $help || @ARGV == 0;
 
 $domain = lc $ARGV[0];
-
 $fileips = $domain.'_ips.txt';
-
-#please see perldoc dnsenum.pl for options and arguments
 
 #options --threads 5 -s 20 -w 
 if ($enum) {
 	$threads = 5;
-	$scrap = 20;
+	$scrap = 5;# reduced Google scraping to 5 to avoid blockage
 	$whois = 1;
 }
-
-my $writer;
-if(defined($output)) {
-    my $out = new IO::File(">$output");
-    $writer = new XML::Writer(OUTPUT=>$out);
-    $writer->xmlDecl("UTF-8");
-    $writer->startTag("magictree", "class"=>"MtBranchObject");
-    $writer->startTag("testdata", "class"=>"MtBranchObject");
-}
-
 
 #module support
 if ($threads) {
@@ -179,6 +172,23 @@ if ($whois && !defined $whois_support) {
 		"whois queries disabled.\n";
 	$whois = undef;
 }
+if ($whois && !defined $whois_support) {
+	warn "Warning: can't load Net::Whois::IP module, ".
+		"whois queries disabled.\n";
+	$whois = undef;
+}
+if ($output && !defined $xml_support) {
+	warn "Warning: can't load XML::Writer module, ".
+		"xml output disabled.\n";
+	$output = undef;
+}
+if(defined($output)) {
+    my $out = new IO::File(">$output");
+    $writer = new XML::Writer(OUTPUT=>$out);
+    $writer->xmlDecl("UTF-8");
+    $writer->startTag("magictree", "class"=>"MtBranchObject");
+    $writer->startTag("testdata", "class"=>"MtBranchObject");
+}
 
 $scrap = undef
 	if $scrap && ((not defined $mech_support and
@@ -193,11 +203,13 @@ $timeout = 10 if $timeout < 0 || $timeout > 128;
 $delay = 3 if $delay < 0;
 
 $update = undef if $update && !$dnsfile;
-
+print color 'bold blue';
 print STDOUT "\n-----   ", $domain ,"   -----\n";
+print color 'reset';
+################START#####################
 
 # (1) get the host's addresses
-print STDOUT "\n"."-" x 17 ."\nHost's addresses:\n"."-" x 17 ."\n";
+printheader ("Host's addresses:\n");
 my $res = Net::DNS::Resolver->new(	tcp_timeout => $timeout,
 					udp_timeout => $timeout,
 					defnames => 0);
@@ -207,8 +219,8 @@ $res->nameservers($dnsserver) if $dnsserver;
 my $packet = $res->query($domain);
 if ($packet) {
 	foreach my $rr (grep { $_->type eq 'A' } $packet->answer) {
-		print STDOUT " ", $rr->string , "\n";
-        xml_host($rr);
+		printrr($rr->{name}, $rr->{ttl}, $rr->{class}, $rr->{type}, $rr->{address});
+		xml_host($rr);
 		push @results, $rr->address
 			if $rr->name =~ /$domain$/;
 	}
@@ -218,7 +230,7 @@ elsif ($verbose) {
 }
 
 # (2) get the namservers for the domain
-print STDOUT "\n"."-" x 13 ."\nName servers:\n"."-" x 13 ."\n";
+printheader ("Name Servers:\n");
 $packet = $res->query($domain, 'NS');
 if ($packet) {
 
@@ -249,7 +261,7 @@ else {
 }
 
 # (3) get the MX record
-print STDOUT "\n"."-" x 11 ."\nMX record:\n"."-" x 11 ."\n";
+printheader ("Mail (MX) Servers:\n");
 $packet = $res->query($domain, 'MX');
 if ($packet) {
 
@@ -273,7 +285,7 @@ elsif ($verbose) {
 }
 
 # (4) perform zonetransfers on nameservers 
-print STDOUT "\n"."-" x 21 ."\nTrying Zonetransfers:\n"."-" x 21 ."\n";
+printheader ("Trying Zone Transfers and getting Bind Versions:\n");
 launchqueries(\&zonetransfer, keys %nameservers);
 
 # wildcards test
@@ -291,11 +303,10 @@ elsif ($verbose) {
 
 # (5) scrap additional names from google search and do nslookup on them
 if ($scrap) {
-	print STDOUT "\n"."-" x 44 . "\nScraping ", $domain ,
-			" subdomains from Google:\n"."-" x 44 ."\n";
+	printheader ("Scraping ".$domain." subdomains from Google:\n");
 	my @tmp = googlescraping();
 	if (scalar @tmp) {
-		print STDOUT "\n Performing nslookups:\n";
+		#print STDOUT "\n Performing nslookups:\n";
 		launchqueries(\&nslookup, map { $_ .= '.'.$domain } @tmp);
 	}
 }
@@ -313,8 +324,8 @@ unless ($dnsfile) {
 $extend_b = 1 if ($update && $update eq 'a') || $subfile || $recursion;
 
 # (6) brute force subdomains from a file
-print STDOUT "\n"."-" x 30 ."\nBrute forcing with ",
-		$dnsfile ,":\n"."-" x 30 ."\n";
+
+printheader ("Brute forcing with ".$dnsfile.":\n");
 bruteforce('f');
 
 #updating dnsfile with zonetransfer or googlescraping subdomains results
@@ -343,9 +354,8 @@ undef %googlesubs if %googlesubs;
 #launch recursion
 if ($recursion) {
 	if (%allsubs) {
-		print STDOUT "\n"."-" x 21 ."\nPerforming recursion:\n"
-				."-"x 21 ."\n";
- 
+		printheader("Performing recursion:\n");
+		
 		print STDOUT "\n ---- Checking subdomains NS records ----\n";
 
 		#select subdomains that are able to recursion
@@ -415,11 +425,7 @@ unless ($noreverse) {
 	$extend_r = 1 
 		if ($update && ($update eq 'r' || $update eq 'a' ||
 			$update eq 'all')) || $subfile;
-
-	print STDOUT "\n"."-" x 52 .
-			"\nPerforming reverse lookup on ",
-			$ipcount ," ip addresses:\n"."-" x 52 ."\n";
-
+	printheader("Performing reverse lookup on ".$ipcount." ip addresses:\n");
 	launchqueries(\&reverselookup, @results);
 
 	print STDOUT "\n", $ipvalid ," results out of ",
@@ -446,8 +452,7 @@ if ($private && scalar @privateips) {
 }
 
 # (9) show non-contiguous IP blocks
-print STDOUT "\n"."-" x 21 ."\n", $domain ," ip blocks:\n".
-		"-" x 21 ."\n";
+printheader($domain." ip blocks:\n");
 print STDOUT " ", $_ , "\n" for @ipblocks;
 
 #clean the brute force file
@@ -469,7 +474,7 @@ exit(0);
 #--------------------------------------------------
 
 #subroutine that will launch different queries
-#(nslookp, zonetransfer, whoisip, reverselookup)
+#(nslookup, zonetransfer, whoisip, reverselookup)
 sub launchqueries {
 
 	my $querytype = shift;
@@ -585,13 +590,13 @@ sub reverselookup {
 						$netranges{$ip} = 1;
 						$ipvalid++;
 					}
-					print STDOUT "  ", $rr->string ,"\n";
-                    xml_host($rr);
+					printrr($rr->{name}, $rr->{ttl}, $rr->{class}, $rr->{type}, $rr->{address});
+					xml_host($rr);
 				}
 				#show all answers even if the hostname don't match the domain
 				elsif ($verbose) {
-					print STDOUT "  ", $rr->string ,"\n";
-                    xml_host($rr);
+					printrr($rr->{name}, $rr->{ttl}, $rr->{class}, $rr->{type}, $rr->{address});
+					xml_host($rr);
 				}	
 			}
 		}
@@ -638,14 +643,16 @@ sub nslookup {
 						persistent_udp => 1,
 						dnsrch => 0);
 	$res->nameservers($dnsserver) if $dnsserver;
-
+	
 	while (defined(my $host = $threads ? $$stream->dequeue_nb : shift)) {
 
 		my $query = $res->search($host);
+		
 		if ($query) {
 			foreach my $rr ($query->answer) {
-				print STDOUT "  ", $rr->string , "\n";
-                xml_host($rr);
+				
+				printrr($rr->{name}, $rr->{ttl}, $rr->{class}, $rr->{type}, $rr->{address});
+				xml_host($rr);
 
 				#check if it match the domain
 				if ($rr->name =~ /(.*)(\.$domain$)/i) {
@@ -666,6 +673,7 @@ sub nslookup {
 				}
  			}
 		}
+		
 		elsif ($verbose) {
 			warn "  ", $host ," A record query failed: ",
 				$res->errorstring, "\n";
@@ -673,7 +681,7 @@ sub nslookup {
 	}
 }
 
-#subroutine to select subdomains that have NS recrods
+#subroutine to select subdomains that have NS records
 sub selectsubdomains {
 
 	my $stream = shift if $threads;
@@ -693,8 +701,9 @@ sub selectsubdomains {
 				$packet->answer) {
 
 				#show all results
-				print STDOUT "  ", $rr->string ,"\n";
-                xml_host($rr);
+				#print STDOUT "  ", $rr->string ,"\n";
+				printrr($rr->{name}, $rr->{ttl}, $rr->{class}, $rr->{type}, $rr->{address});
+				xml_host($rr);
 					
 				if ($rr->name =~ /(.*)(\.$domain$)/i) {
 
@@ -771,7 +780,7 @@ sub selectsubdomains {
 	}
 }
 
-#subroutine for zonetransfers
+#subroutine for zonetransfers and bind versions of nameservers
 sub zonetransfer {
 
 	my $stream = shift if $threads;
@@ -783,13 +792,15 @@ sub zonetransfer {
 	  	$res->nameservers($ns);
 		
 		my @zone = $res->axfr($domain);
-		print STDOUT "\n Trying zonetransfer for ", $domain ,
+		my $version_query = $res->search("version.bind","TXT","CH");
+		print STDOUT "\nTrying Zone Transfer for ", $domain ,
 				" on ", $ns ," ... \n";
+		
 		if (@zone) {
 			foreach my $rr (@zone) {
 				#print all results
-				print STDOUT "  ", $rr->string ,"\n";
-                xml_host($rr);
+				printrr($rr->{name}, $rr->{ttl}, $rr->{class}, $rr->{type}, $rr->{address});
+				xml_host($rr);
 
 				#save data if the record's domain name
 				#match the domain
@@ -817,10 +828,19 @@ sub zonetransfer {
 				}
 			}
 		}	
-		elsif ($verbose) {
-			warn "  AXFR record query failed: ",
+		else	{
+			warn "AXFR record query failed: ",
 				$res->errorstring, "\n";
 		}
+		if ($version_query) {
+			foreach my $rr ($version_query->answer) {
+			next unless $rr->type eq "TXT";
+			print STDOUT "\n".$ns." Bind Version: ".$rr->rdata."\n";
+			}
+		}
+		else	{
+			warn "Unable to obtain Server Version for ".$ns." : ", $res->errorstring, "\n";
+			}
 	}
 }
 
@@ -900,8 +920,8 @@ sub googlescraping {
 
 	} while ($count < $scrap && $mypage <= $pages && $nextpage);
 
-	print STDOUT "\n Google results: ", $count ,"\n";
-	
+	#print STDOUT "\n Google results: ", $count ,"\n";
+	printheader("Google Results:\n");
 	if ($count) {
 		return grep { $allsubs{$_} eq 'g' } keys %allsubs;
 	}
@@ -1061,7 +1081,8 @@ sub bruteforce {
 		undef %recursubs;
 
 		#select subdomains
-		print STDOUT "\n ---- Checking subdomains NS records ----\n";
+		printheader("Checking subdomains NS records:\n" );
+		
 		launchqueries(\&selectsubdomains,
 				map { $_ .= '.'.$domain } sort @tmp);
 
@@ -1141,26 +1162,19 @@ sub networkranges {
 
 	#launch whois queries on IP's to get the correct netranges
 	if ($whois) {
-		print STDOUT "\n"."-" x 23 .
-				"\nLaunching whois queries:\n".
-				"-" x 23 ."\n";
-
+		printheader("Launching Whois Queries:\n");
 		#shutdown warns the whois ip will catch exceptions with eval
 		$SIG{__WARN__} = sub {} ;
 		launchqueries(\&whoisip, @cnets);
 		$SIG{__WARN__} = 'DEFAULT';
 		
-		print STDOUT "\n"."-" x 28 ."\n",
-				$domain ," whois netranges:\n".
-				"-" x 28 ."\n";
+		printheader($domain ," whois netranges:\n");			
 		print STDOUT " ", $_ , "\n" for keys %netranges; 
 	}
 	#default class C netrange
 	else {
-		print STDOUT "\n"."-" x 31 ."\n",
-				$domain ," class C netranges:\n".
-				"-" x 31 ."\n";
-
+		
+		printheader($domain." class C netranges:\n");
 		grep { $_ .= "/24"; print STDOUT " ",$_,"\n"; } @cnets;
 		$ipcount = scalar @cnets * 256;
 	}
@@ -1234,8 +1248,8 @@ sub additionalrecord {
 		foreach (grep {$_ eq $rr->name} @servers) {
 
 			$seen{$rr->name} = 1;
-			print STDOUT "  ", $rr->string , "\n";	
-            xml_host($rr);
+			printrr($rr->{name}, $rr->{ttl}, $rr->{class}, $rr->{type}, $rr->{address});
+			xml_host($rr);
 			push @results, $rr->address
 				if $rr->name =~ /$domain$/;
 
@@ -1283,6 +1297,24 @@ sub cleanfile {
 
 	writetofile($file,"w",
 		sort {uc($a) cmp uc($b)} grep {chomp} keys %uniq);
+}
+
+sub printrr {
+	
+	my $name = shift;
+	my $ttl = shift;
+	my $class = shift;
+	my $type= shift;
+	my $address = shift;
+	$address = "" unless defined $address;
+	printf("%-40s %-8s %-5s %-8s %10s\n", $name, $ttl, $class, $type, $address);
+	
+}
+sub printheader{
+	my ($header) = @_;
+	print color 'bold red';
+	print STDOUT "\n\n".$header."_" x length($header) ."\n\n";
+	print color 'reset';
 }
 
 #the usage subroutine
@@ -1337,7 +1369,7 @@ dnsenum.pl: multithread script to enumerate information on a domain and to disco
 
 =head1 VERSION
 
-dnsenum.pl version 1.2.1
+dnsenum.pl version 1.2.2
 
 =head1 SYNOPSIS
 
