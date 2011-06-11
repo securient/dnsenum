@@ -1,4 +1,4 @@
-README - dnsenum.pl VERSION: 1.2.1
+README - dnsenum.pl VERSION: 1.2.2
 
 multithreaded perl script to enumerate DNS information of a domain
 and to discover non-contiguous ip blocks.
@@ -11,7 +11,7 @@ OPERATIONS:
 
 	3) Get the MX record (threaded).
 
-	4) Perform axfr queries on nameservers (threaded).
+	4) Perform axfr queries on nameservers and get BIND VERSION (threaded).
 
 	5) Get extra names and subdomains via google scraping
 	   (google query = "allinurl: -www site:domain").
@@ -27,9 +27,9 @@ OPERATIONS:
 
 	9) Write to domain_ips.txt file ip-blocks.
 
-Changelog from version 1.2:
-- Cleanup
-- Added XML output support for MagicTree integration (www.gremwell.com)
+Changelog from version 1.2.1
+- Cleaner Output
+- Added Bind Version detection
 
 PREREQUISITES: 
 
