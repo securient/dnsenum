@@ -1,4 +1,4 @@
-#summary One-sentence summary of this page.
+#summary If you have problems getting it running.
 
 = Installation =
 
